@@ -22,3 +22,7 @@ indoc = "0.2.6"
 [dev-dependencies.pretty_assertions]
 git = "https://github.com/Nemo157/rust-pretty-assertions"
 branch = "prettier-multiline-strings"
+
+[patch.crates-io.num-rational]
+git = "https://github.com/dnsl48/num-rational"
+branch = "feature/as_decimal"

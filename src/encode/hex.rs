@@ -618,19 +618,31 @@ fn extract_fraction(
 }
 
 fn decimal_fraction(value: &Value) -> Line {
-    // TODO: https://github.com/rust-num/num-rational/issues/10
     extract_fraction(value, 10)
         .map(|fraction| {
-            Line::new("", format!("decimal fraction({})", fraction))
+            let mut line = String::with_capacity(64);
+            line.push_str("decimal fraction(");
+            if !fraction.format_as_decimal(&mut line, 16).unwrap() {
+                line.push_str("…");
+            }
+            line.push_str(")");
+            Line::new("", line)
         }).unwrap_or_else(|err| {
             Line::new("", format!("{} for decimal fraction", err))
         })
 }
 
 fn bigfloat(value: &Value) -> Line {
-    // TODO: https://github.com/rust-num/num-rational/issues/10
     extract_fraction(value, 2)
-        .map(|fraction| Line::new("", format!("bigfloat({})", fraction)))
+        .map(|fraction| {
+            let mut line = String::with_capacity(64);
+            line.push_str("bigfloat(");
+            if !fraction.format_as_decimal(&mut line, 16).unwrap() {
+                line.push_str("…");
+            }
+            line.push_str(")");
+            Line::new("", line)
+        })
         .unwrap_or_else(|err| Line::new("", format!("{} for bigfloat", err)))
 }
 

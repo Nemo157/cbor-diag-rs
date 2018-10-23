@@ -609,7 +609,7 @@ testcases! {
                    82         #   array(2)
                       21      #     negative(-2)
                       19 6ab3 #     unsigned(27,315)
-                              #   decimal fraction(5463/20)
+                              #   decimal fraction(273.15)
             "#),
         }
 
@@ -636,7 +636,7 @@ testcases! {
                    82    #   array(2)
                       20 #     negative(-1)
                       03 #     unsigned(3)
-                         #   bigfloat(3/2)
+                         #   bigfloat(1.5)
             "#),
         }
 
@@ -673,7 +673,7 @@ testcases! {
                             000001ffffffffffffffffffffff0000 #         "\x00\x00\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00"
                             000000000000000000               #         "\x00\x00\x00\x00\x00\x00\x00\x00\x00"
                                                              #       bignum(191561942608236107294793378084303638130997321548169216)
-                                                             #   decimal fraction(21267647932558653966460912930125774848/11102230246251565404236316680908203125)
+                                                             #   decimal fraction(1.915619426082361…)
             "#),
         }
 
@@ -710,7 +710,7 @@ testcases! {
                             000001ffffffffffffffffffffff0000 #         "\x00\x00\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00"
                             000000000000000000               #         "\x00\x00\x00\x00\x00\x00\x00\x00\x00"
                                                              #       bignum(191561942608236107294793378084303638130997321548169216)
-                                                             #   bigfloat(618970019642690137449562111/309485009821345068724781056)
+                                                             #   bigfloat(1.9999999999999999…)
             "#),
         }
 
