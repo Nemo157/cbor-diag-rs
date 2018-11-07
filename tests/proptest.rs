@@ -31,16 +31,6 @@ fn bitwidth_max(width: IntegerWidth) -> u64 {
     }
 }
 
-fn arb_integer_width() -> impl Strategy<Value = IntegerWidth> {
-    prop_oneof![
-        Just(IntegerWidth::Zero),
-        Just(IntegerWidth::Eight),
-        Just(IntegerWidth::Sixteen),
-        Just(IntegerWidth::ThirtyTwo),
-        Just(IntegerWidth::SixtyFour),
-    ]
-}
-
 fn arb_float_width() -> impl Strategy<Value = FloatWidth> {
     prop_oneof![
         Just(FloatWidth::Sixteen),
@@ -50,7 +40,7 @@ fn arb_float_width() -> impl Strategy<Value = FloatWidth> {
 }
 
 fn arb_unsigned() -> impl Strategy<Value = (u64, IntegerWidth)> {
-    arb_integer_width().prop_flat_map(|bitwidth| {
+    any::<IntegerWidth>().prop_flat_map(|bitwidth| {
         (0..=bitwidth_max(bitwidth)).prop_map(move |value| (value, bitwidth))
     })
 }
@@ -66,7 +56,7 @@ fn arb_negative() -> impl Strategy<Value = DataItem> {
 }
 
 fn arb_bytestring() -> impl Strategy<Value = ByteString> {
-    arb_integer_width().prop_flat_map(|bitwidth| {
+    any::<IntegerWidth>().prop_flat_map(|bitwidth| {
         collection::vec(
             any::<u8>(),
             0..=cmp::min(bitwidth_max(bitwidth) as usize, 300),
@@ -85,7 +75,7 @@ fn arb_indefinite_bytestring() -> impl Strategy<Value = DataItem> {
 }
 
 fn arb_textstring() -> impl Strategy<Value = TextString> {
-    arb_integer_width().prop_flat_map(|bitwidth| {
+    any::<IntegerWidth>().prop_flat_map(|bitwidth| {
         ".{0,32}"
             .prop_filter("string too long", move |data| {
                 data.len() as u64 <= bitwidth_max(bitwidth)
@@ -109,7 +99,7 @@ fn arb_array(
 ) -> impl Strategy<Value = DataItem> {
     (
         collection::vec(data, count),
-        option::of(arb_integer_width()),
+        option::of(any::<IntegerWidth>()),
     )
         .prop_map(|(data, bitwidth)| DataItem::Array { data, bitwidth })
 }
@@ -120,7 +110,7 @@ fn arb_map(
 ) -> impl Strategy<Value = DataItem> {
     (
         collection::vec((data.clone(), data), count),
-        option::of(arb_integer_width()),
+        option::of(any::<IntegerWidth>()),
     )
         .prop_map(|(data, bitwidth)| DataItem::Map { data, bitwidth })
 }
@@ -128,7 +118,7 @@ fn arb_map(
 fn arb_tagged(
     value: impl Strategy<Value = DataItem> + Clone,
 ) -> impl Strategy<Value = DataItem> {
-    arb_integer_width().prop_flat_map(move |bitwidth| {
+    any::<IntegerWidth>().prop_flat_map(move |bitwidth| {
         (
             (0..=bitwidth_max(bitwidth)).prop_map(Tag),
             value.clone().prop_map(Box::new),

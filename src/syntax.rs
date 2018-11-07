@@ -1,4 +1,8 @@
+#[cfg(feature = "proptest")]
+use proptest::arbitrary::Arbitrary;
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "proptest", derive(Arbitrary))]
 /// How many additional bytes are used to encode this integer (in bits).
 ///
 /// See [RFC 7049 § 2][RFC 2].
@@ -6,6 +10,7 @@
 /// [RFC 2]: https://tools.ietf.org/html/rfc7049#section-2
 pub enum IntegerWidth {
     /// Parsed from CBOR diagnostic notation without an encoding indicator
+    #[cfg_attr(feature = "proptest", proptest(skip))]
     Unknown,
     /// For values <24 encoded directly in the additional data of the first byte
     Zero,

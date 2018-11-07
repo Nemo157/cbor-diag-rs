@@ -7,6 +7,8 @@ extern crate hex;
 extern crate num;
 extern crate separator;
 extern crate uri;
+#[cfg(feature = "proptest")]
+extern crate proptest;
 
 mod encode;
 mod error;
