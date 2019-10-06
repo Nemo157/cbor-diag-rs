@@ -21,6 +21,14 @@ enum To {
     Compact,
 }
 
+#[derive(Copy, Clone, Debug, strum::EnumString, strum::EnumVariantNames)]
+#[strum(serialize_all = "snake_case")]
+enum Color {
+    Auto,
+    Always,
+    Never,
+}
+
 #[derive(Debug, structopt::StructOpt)]
 #[structopt(name = "cbor-diag", setting = structopt::clap::AppSettings::ColoredHelp)]
 /// A utility for converting between binary, diagnostic, hex and annotated hex
@@ -33,6 +41,10 @@ struct Args {
     /// What format to output
     #[structopt(long, default_value = "diag", possible_values(To::VARIANTS))]
     to: To,
+
+    /// When to enable color
+    #[structopt(long, default_value = "auto", possible_values(Color::VARIANTS))]
+    color: Color,
 
     /// Parse a series of undelimited CBOR data items in binary format (a.k.a. the `cbor-seq` data
     /// type).
@@ -52,22 +64,26 @@ trait ReadExt: Read {
 
 impl<R: Read> ReadExt for R {}
 
-fn output_item(value: cbor_diag::DataItem, to: To, mut output: impl Write) -> anyhow::Result<()> {
-    match to {
-        To::Annotated => {
+fn output_item(value: cbor_diag::DataItem, to: To, color: Color, mut output: impl Write) -> anyhow::Result<()> {
+    match (to, color) {
+        (To::Annotated, _) => {
             output.write_all(value.to_hex().as_bytes())?;
         }
-        To::Hex => {
+        (To::Hex, _) => {
             output.write_all(hex::encode(value.to_bytes()).as_bytes())?;
         }
-        To::Bytes => {
+        (To::Bytes, _) => {
             output.write_all(&value.to_bytes())?;
         }
-        To::Diag => {
+        (To::Diag, Color::Auto) | (To::Diag, Color::Always) => {
+            output.write_all(value.to_diag_pretty_colored().as_bytes())?;
+            output.write_all(b"\n")?;
+        }
+        (To::Diag, Color::Never) => {
             output.write_all(value.to_diag_pretty().as_bytes())?;
             output.write_all(b"\n")?;
         }
-        To::Compact => {
+        (To::Compact, _) => {
             output.write_all(value.to_diag().as_bytes())?;
             output.write_all(b"\n")?;
         }
@@ -89,7 +105,7 @@ fn main(args: Args) -> anyhow::Result<()> {
 
         while input.read_to_vec(&mut data)? {
             while let Some((value, len)) = cbor_diag::parse_bytes_partial(&data)? {
-                output_item(value, args.to, &mut output)?;
+                output_item(value, args.to, args.color, &mut output)?;
                 if args.to != To::Bytes && args.to != To::Compact {
                     output.write_all(b"\n")?;
                 }
@@ -129,7 +145,7 @@ fn main(args: Args) -> anyhow::Result<()> {
             }
         };
 
-        output_item(value, args.to, &mut output)?;
+        output_item(value, args.to, args.color, &mut output)?;
     }
 
     Ok(())

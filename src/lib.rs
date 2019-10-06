@@ -20,6 +20,7 @@ extern crate num_traits;
 extern crate separator;
 extern crate url;
 extern crate uuid;
+extern crate stylish;
 
 mod encode;
 mod error;

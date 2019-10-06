@@ -1,6 +1,7 @@
 use base64::{self, display::Base64Display};
 use half::f16;
 use hex;
+use ::stylish::{Color, Intensity, Write};
 
 use super::Encoding;
 use {ByteString, DataItem, FloatWidth, IntegerWidth, Simple, Tag, TextString};
@@ -11,11 +12,11 @@ pub(crate) enum Layout {
     Compact,
 }
 
-pub(crate) struct Context<'a> {
-    output: &'a mut String,
+pub(crate) struct Contextual<T> {
     layout: Layout,
     encoding: Encoding,
     indent: usize,
+    inner: T,
 }
 
 trait LengthEstimate {
@@ -128,22 +129,31 @@ impl LengthEstimate for Simple {
     }
 }
 
-impl<'a> Context<'a> {
-    pub(crate) fn new(output: &'a mut String, layout: Layout) -> Self {
+impl<T> Contextual<T> {
+    pub(crate) fn new(layout: Layout, inner: T) -> Self {
         Self {
-            output,
             layout,
+            inner,
             encoding: Encoding::Base16,
             indent: 0,
         }
     }
 
-    pub(crate) fn with_encoding(&mut self, encoding: Encoding) -> Context<'_> {
-        Context {
-            output: self.output,
+    pub(crate) fn with_encoding(&self, encoding: Encoding) -> Self where T: Copy {
+        Self {
             layout: self.layout,
             encoding,
             indent: self.indent,
+            inner: self.inner,
+        }
+    }
+
+    pub(crate) fn wrap<U>(&self, inner: U) -> Contextual<U> {
+        Contextual {
+            layout: self.layout,
+            encoding: self.encoding,
+            indent: self.indent,
+            inner,
         }
     }
 
@@ -151,293 +161,427 @@ impl<'a> Context<'a> {
         self.layout == Layout::Pretty
     }
 
-    fn indent(&mut self) {
+    fn with_indent(&self, indent: usize) -> Contextual<&T> {
+        Contextual {
+            layout: self.layout,
+            encoding: self.encoding,
+            indent: self.indent + indent,
+            inner: &self.inner,
+        }
+    }
+
+    fn indent(&self) -> String {
+        let mut output = String::new();
         for _ in 0..self.indent {
-            self.output.push(' ');
+            output.push(' ');
         }
+        output
     }
+}
 
-    fn line(&mut self) {
-        self.output.push('\n');
+impl<T> core::ops::Deref for Contextual<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
+}
 
-    fn integer_to_diag(&mut self, value: u64, bitwidth: IntegerWidth) {
-        if bitwidth == IntegerWidth::Unknown || bitwidth == IntegerWidth::Zero {
-            self.output.push_str(&value.to_string());
+struct Integer {
+    value: u64,
+    bitwidth: IntegerWidth,
+}
+
+struct Negative {
+    value: u64,
+    bitwidth: IntegerWidth,
+}
+
+struct Float {
+    value: f64,
+    bitwidth: FloatWidth,
+}
+
+struct Container<'a, T> {
+    begin: &'a str,
+    items: &'a [T],
+    end: &'a str,
+    definite: bool,
+    trivial: bool,
+}
+
+struct Tagged<'a> {
+    tag: Tag,
+    bitwidth: IntegerWidth,
+    value: &'a DataItem,
+}
+
+impl stylish::Display for Contextual<&Integer> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        if let IntegerWidth::Unknown | IntegerWidth::Zero = self.bitwidth {
+            self.value.fmt(f)?;
         } else {
-            let encoding = match bitwidth {
+            let encoding = match self.bitwidth {
                 IntegerWidth::Eight => 0,
                 IntegerWidth::Sixteen => 1,
                 IntegerWidth::ThirtyTwo => 2,
                 IntegerWidth::SixtyFour => 3,
-                _ => unreachable!(),
+                _ => return Ok(()),
             };
-            self.output.push_str(&format!("{}_{}", value, encoding));
+            f.write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Val(&self.value),
+                    stylish::Argument::With {
+                        restyle: &Intensity::Faint,
+                        arguments: stylish::Arguments {
+                            pieces: &[stylish::Argument::Lit("_"), stylish::Argument::Val(&encoding)],
+                        }
+                    }
+                ]
+            })?;
         }
+        Ok(())
     }
+}
 
-    fn negative_to_diag(&mut self, value: u64, bitwidth: IntegerWidth) {
-        let value = -1i128 - i128::from(value);
-        if bitwidth == IntegerWidth::Unknown || bitwidth == IntegerWidth::Zero {
-            self.output.push_str(&value.to_string());
+impl stylish::Display for Contextual<&Negative> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        let value = -1i128 - i128::from(self.value);
+        if let IntegerWidth::Unknown | IntegerWidth::Zero = self.bitwidth {
+            value.fmt(f)?;
         } else {
-            let encoding = match bitwidth {
+            let encoding = match self.bitwidth {
                 IntegerWidth::Eight => 0,
                 IntegerWidth::Sixteen => 1,
                 IntegerWidth::ThirtyTwo => 2,
                 IntegerWidth::SixtyFour => 3,
-                _ => unreachable!(),
+                _ => return Ok(()),
             };
-            self.output.push_str(&format!("{}_{}", value, encoding));
+            f.write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Val(&value),
+                    stylish::Argument::With {
+                        restyle: &Intensity::Faint,
+                        arguments: stylish::Arguments {
+                            pieces: &[stylish::Argument::Lit("_"), stylish::Argument::Val(&encoding)],
+                        }
+                    }
+                ]
+            })?;
         }
+        Ok(())
     }
+}
 
-    fn definite_bytestring_to_diag(&mut self, bytestring: &ByteString) {
-        match self.encoding {
-            Encoding::Base64Url => {
-                self.output.push_str(&format!(
-                    "b64'{}'",
-                    Base64Display::with_config(&bytestring.data, base64::URL_SAFE_NO_PAD)
-                ));
+impl stylish::Display for Contextual<&Float> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        if self.value.is_nan() {
+            f.write_str("NaN")?;
+        } else if self.value.is_infinite() {
+            if self.value.is_sign_negative() {
+                f.write_str("-")?;
             }
-            Encoding::Base64 => {
-                self.output.push_str(&format!(
-                    "b64'{}'",
-                    Base64Display::with_config(&bytestring.data, base64::STANDARD_NO_PAD)
-                ));
-            }
-            Encoding::Base16 => {
-                self.output
-                    .push_str(&format!("h'{}'", hex::encode(&bytestring.data)));
-            }
-        }
-    }
-
-    fn definite_textstring_to_diag(&mut self, textstring: &TextString) {
-        self.output.push('"');
-        for c in textstring.data.chars() {
-            if c == '\"' || c == '\\' {
-                for c in c.escape_default() {
-                    self.output.push(c);
-                }
-            } else {
-                self.output.push(c);
-            }
-        }
-        self.output.push('"');
-    }
-
-    fn container_to_diag<T>(
-        &mut self,
-        begin: char,
-        items: impl IntoIterator<Item = T>,
-        end: char,
-        definite: bool,
-        trivial: bool,
-        item_to_diag: fn(&mut Self, T),
-    ) {
-        self.output.push(begin);
-        if !definite {
-            self.output.push('_');
-            if trivial && self.pretty() {
-                self.output.push(' ');
-            }
-        }
-        if !trivial {
-            self.indent += 4;
-        }
-        let mut items = items.into_iter();
-        if let Some(item) = items.next() {
-            if self.pretty() && !trivial {
-                self.line();
-                self.indent();
-            }
-            item_to_diag(self, item);
-        }
-        for item in items {
-            self.output.push(',');
-            if self.pretty() {
-                if trivial {
-                    self.output.push(' ');
-                } else {
-                    self.line();
-                    self.indent();
-                }
-            }
-            item_to_diag(self, item);
-        }
-        if !trivial {
-            self.indent -= 4;
-            if self.pretty() {
-                self.output.push(',');
-                self.line();
-                self.indent();
-            }
-        }
-        self.output.push(end);
-    }
-
-    fn indefinite_string_to_diag<T>(
-        &mut self,
-        strings: &[T],
-        trivial: bool,
-        definite_string_to_diag: fn(&mut Self, &T),
-    ) {
-        self.container_to_diag('(', strings, ')', false, trivial, definite_string_to_diag);
-    }
-
-    fn array_to_diag(&mut self, array: &[DataItem], definite: bool, trivial: bool) {
-        self.container_to_diag('[', array, ']', definite, trivial, Self::item_to_diag);
-    }
-
-    fn map_to_diag(&mut self, values: &[(DataItem, DataItem)], definite: bool, trivial: bool) {
-        self.container_to_diag('{', values, '}', definite, trivial, |this, (key, value)| {
-            this.item_to_diag(key);
-            this.output.push(':');
-            if this.pretty() {
-                this.output.push(' ');
-            }
-            this.item_to_diag(value);
-        });
-    }
-
-    pub fn tagged_to_diag(&mut self, tag: Tag, bitwidth: IntegerWidth, value: &DataItem) {
-        if bitwidth == IntegerWidth::Unknown || bitwidth == IntegerWidth::Zero {
-            self.output.push_str(&tag.0.to_string());
+            f.write_str("Infinity")?;
         } else {
-            let encoding = match bitwidth {
-                IntegerWidth::Eight => 0,
-                IntegerWidth::Sixteen => 1,
-                IntegerWidth::ThirtyTwo => 2,
-                IntegerWidth::SixtyFour => 3,
-                _ => unreachable!(),
+            let value = match self.bitwidth {
+                FloatWidth::Unknown | FloatWidth::SixtyFour => self.value.to_string(),
+                FloatWidth::Sixteen => f16::from_f64(self.value).to_string(),
+                FloatWidth::ThirtyTwo => (self.value as f32).to_string(),
             };
-            self.output.push_str(&format!("{}_{}", tag.0, encoding));
-        }
-        self.output.push('(');
-
-        match tag {
-            Tag::ENCODED_BASE64URL => {
-                self.with_encoding(Encoding::Base64Url).item_to_diag(value);
-            }
-            Tag::ENCODED_BASE64 => {
-                self.with_encoding(Encoding::Base64).item_to_diag(value);
-            }
-            Tag::ENCODED_BASE16 => {
-                self.with_encoding(Encoding::Base16).item_to_diag(value);
-            }
-            _ => {
-                self.item_to_diag(value);
-            }
-        }
-
-        self.output.push(')');
-    }
-
-    fn float_to_diag(&mut self, value: f64, bitwidth: FloatWidth) {
-        if value.is_nan() {
-            self.output.push_str("NaN");
-        } else if value.is_infinite() {
-            if value.is_sign_negative() {
-                self.output.push('-');
-            }
-            self.output.push_str("Infinity");
-        } else {
-            let value = match bitwidth {
-                FloatWidth::Unknown | FloatWidth::SixtyFour => value.to_string(),
-                FloatWidth::Sixteen => f16::from_f64(value).to_string(),
-                FloatWidth::ThirtyTwo => (value as f32).to_string(),
-            };
-            self.output.push_str(&value);
+            f.write_str(&value)?;
             if !value.contains('.') && !value.contains('e') {
-                self.output.push_str(".0");
+                f.write_str(".0")?;
             }
         }
-        self.output.push_str(match bitwidth {
+        f.with(Intensity::Faint).write_str(match self.bitwidth {
             FloatWidth::Unknown => "",
             FloatWidth::Sixteen => "_1",
             FloatWidth::ThirtyTwo => "_2",
             FloatWidth::SixtyFour => "_3",
-        });
+        })?;
+        Ok(())
     }
+}
 
-    fn simple_to_diag(&mut self, simple: Simple) {
-        match simple {
-            Simple::FALSE => self.output.push_str("false"),
-            Simple::TRUE => self.output.push_str("true"),
-            Simple::NULL => self.output.push_str("null"),
-            Simple::UNDEFINED => self.output.push_str("undefined"),
-            Simple(value) => self.output.push_str(&format!("simple({})", value)),
+impl stylish::Display for Contextual<&Simple> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        match ***self {
+            Simple::FALSE => f.with(Color::Green).write_str("false")?,
+            Simple::TRUE => f.with(Color::Green).write_str("true")?,
+            Simple::NULL => f.with(Color::Red).write_str("null")?,
+            Simple::UNDEFINED => {
+                f.with(Color::Red).write_str("undefined")?;
+            }
+            Simple(value) => f.with(Color::Magenta).write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Lit("simple("),
+                    stylish::Argument::Val(&value),
+                    stylish::Argument::Lit(")"),
+                ]
+            })?,
         }
+        Ok(())
     }
+}
 
-    fn item_to_diag(&mut self, value: &DataItem) {
-        match *value {
+impl stylish::Display for Contextual<&TextString> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        let mut f = f.with(Color::Blue);
+
+        f.write_str("\"")?;
+        for c in self.data.chars() {
+            if c == '\"' || c == '\\' {
+                for c in c.escape_default() {
+                    f.write_char(c)?;
+                }
+            } else {
+                f.write_char(c)?;
+            }
+        }
+        f.write_str("\"")?;
+
+        Ok(())
+    }
+}
+
+impl stylish::Display for Contextual<&ByteString> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        let mut f = f.with(Color::Yellow);
+
+        f.with(Intensity::Faint).write_str(match self.encoding {
+            Encoding::Base64Url | Encoding::Base64 => "b64'",
+            Encoding::Base16 => "h'",
+        })?;
+
+        match self.encoding {
+            Encoding::Base64Url => {
+                Base64Display::with_config(&self.data, base64::URL_SAFE_NO_PAD).fmt(&mut f)?;
+            }
+            Encoding::Base64 => {
+                Base64Display::with_config(&self.data, base64::STANDARD_NO_PAD).fmt(&mut f)?;
+            }
+            Encoding::Base16 => {
+                f.write_str(&hex::encode(&self.data))?;
+            }
+        }
+        f.with(Intensity::Faint).write_str("'")?;
+
+        Ok(())
+    }
+}
+
+impl stylish::Display for Contextual<&Tagged<'_>> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        let mut g = f.with(Color::Cyan);
+        self.tag.0.fmt(&mut g)?;
+        let encoding = match self.bitwidth {
+            IntegerWidth::Eight => Some(0),
+            IntegerWidth::Sixteen => Some(1),
+            IntegerWidth::ThirtyTwo => Some(2),
+            IntegerWidth::SixtyFour => Some(3),
+            IntegerWidth::Unknown | IntegerWidth::Zero => None,
+        };
+        if let Some(encoding) = encoding {
+            g.with(Intensity::Faint).write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Lit("_"),
+                    stylish::Argument::Val(&encoding),
+                ]
+            })?;
+        }
+        g.write_str("(")?;
+
+        match self.tag {
+            Tag::ENCODED_BASE64URL => {
+                self.with_encoding(Encoding::Base64Url).wrap(self.value).fmt(f)?;
+            }
+            Tag::ENCODED_BASE64 => {
+                self.with_encoding(Encoding::Base64).wrap(self.value).fmt(f)?;
+            }
+            Tag::ENCODED_BASE16 => {
+                self.with_encoding(Encoding::Base16).wrap(self.value).fmt(f)?;
+            }
+            _ => {
+                self.wrap(self.value).fmt(f)?;
+            }
+        }
+
+        f.with(Color::Cyan).write_str(")")?;
+
+        Ok(())
+    }
+}
+
+impl<'a, T> stylish::Display for Contextual<&Container<'a, T>> where Contextual<&'a T>: stylish::Display {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        f.with(Intensity::Bold).write_str(self.begin)?;
+        if !self.definite {
+            f.with(Intensity::Normal).write_str("_")?;
+            if self.trivial && self.pretty() {
+                f.write_str(" ")?;
+            }
+        }
+        let this = self.with_indent(if self.trivial { 0 } else { 4 });
+        let mut items = this.items.iter();
+        if let Some(item) = items.next() {
+            if this.pretty() && !this.trivial {
+                f.write_str("\n")?;
+                f.write_str(&this.indent())?;
+            }
+            this.wrap(item).fmt(f)?;
+        }
+        for item in items {
+            f.with(Intensity::Normal).write_str(",")?;
+            if this.pretty() {
+                if this.trivial {
+                    f.write_str(" ")?;
+                } else {
+                    f.write_str("\n")?;
+                    f.write_str(&this.indent())?;
+                }
+            }
+            this.wrap(item).fmt(f)?;
+        }
+        if self.pretty() && !this.trivial {
+            f.with(Intensity::Normal).write_str(",")?;
+            f.write_str("\n")?;
+            f.write_str(&self.indent())?;
+        }
+        f.with(Intensity::Bold).write_str(self.end)?;
+        Ok(())
+    }
+}
+
+// Map key-value pairs
+impl stylish::Display for Contextual<&(DataItem, DataItem)> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        self.wrap(&self.0).fmt(&mut f.with(Intensity::Bold))?;
+        f.write_str(":")?;
+        if self.pretty() {
+            f.write_str(" ")?;
+        }
+        self.wrap(&self.1).fmt(f)?;
+        Ok(())
+    }
+}
+
+impl stylish::Display for Contextual<&DataItem> {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+        match ***self {
             DataItem::Integer { value, bitwidth } => {
-                self.integer_to_diag(value, bitwidth);
+                self.wrap(&Integer { value, bitwidth }).fmt(f)?;
             }
             DataItem::Negative { value, bitwidth } => {
-                self.negative_to_diag(value, bitwidth);
+                self.wrap(&Negative { value, bitwidth }).fmt(f)?;
             }
-            DataItem::ByteString(ref bytestring) => {
-                self.definite_bytestring_to_diag(bytestring);
+            DataItem::Float { value, bitwidth } => {
+                self.wrap(&Float { value, bitwidth }).fmt(f)?;
             }
-            DataItem::IndefiniteByteString(ref bytestrings) => {
-                self.indefinite_string_to_diag(
-                    bytestrings,
-                    is_trivial(value),
-                    Self::definite_bytestring_to_diag,
-                );
-            }
-            DataItem::TextString(ref textstring) => {
-                self.definite_textstring_to_diag(textstring);
-            }
-            DataItem::IndefiniteTextString(ref textstrings) => {
-                self.indefinite_string_to_diag(
-                    textstrings,
-                    is_trivial(value),
-                    Self::definite_textstring_to_diag,
-                );
+            DataItem::Simple(ref value) => {
+                self.wrap(value).fmt(f)?;
             }
             DataItem::Array {
                 ref data,
                 ref bitwidth,
             } => {
-                self.array_to_diag(data, bitwidth.is_some(), is_trivial(value));
+                self.wrap(&Container {
+                    begin: "[",
+                    items: data,
+                    end: "]",
+                    definite: bitwidth.is_some(),
+                    trivial: is_trivial(**self),
+                }).fmt(f)?;
             }
             DataItem::Map {
                 ref data,
                 ref bitwidth,
             } => {
-                self.map_to_diag(data, bitwidth.is_some(), is_trivial(value));
+                self.wrap(&Container {
+                    begin: "{",
+                    items: data,
+                    end: "}",
+                    definite: bitwidth.is_some(),
+                    trivial: is_trivial(**self),
+                }).fmt(f)?;
+            }
+            DataItem::TextString(ref textstring) => {
+                self.wrap(textstring).fmt(f)?;
+            }
+            DataItem::IndefiniteTextString(ref textstrings) => {
+                self.wrap(&Container {
+                    begin: "(",
+                    items: textstrings,
+                    end: ")",
+                    definite: false,
+                    trivial: is_trivial(**self),
+                }).fmt(f)?;
+            }
+            DataItem::ByteString(ref bytestring) => {
+                self.wrap(bytestring).fmt(f)?;
+            }
+            DataItem::IndefiniteByteString(ref bytestrings) => {
+                self.wrap(&Container {
+                    begin: "(",
+                    items: bytestrings,
+                    end: ")",
+                    definite: false,
+                    trivial: is_trivial(**self),
+                }).fmt(f)?;
             }
             DataItem::Tag {
                 tag,
                 bitwidth,
                 ref value,
             } => {
-                self.tagged_to_diag(tag, bitwidth, &*value);
-            }
-            DataItem::Float { value, bitwidth } => {
-                self.float_to_diag(value, bitwidth);
-            }
-            DataItem::Simple(simple) => {
-                self.simple_to_diag(simple);
+                self.wrap(&Tagged { tag, bitwidth, value }).fmt(f)?;
             }
         }
+        Ok(())
     }
 }
 
 impl DataItem {
     pub fn to_diag(&self) -> String {
-        let mut s = String::with_capacity(128);
-        Context::new(&mut s, Layout::Compact).item_to_diag(self);
-        s
+        let mut output = stylish::plain::String::new();
+        let context = Contextual::new(Layout::Compact, self);
+        output.write_fmt(&stylish::Arguments {
+            pieces: &[
+                stylish::Argument::Val(&context),
+            ]
+        }).unwrap();
+        output.into_inner()
     }
 
     pub fn to_diag_pretty(&self) -> String {
-        let mut s = String::with_capacity(128);
-        Context::new(&mut s, Layout::Pretty).item_to_diag(self);
-        s
+        let mut output = stylish::plain::String::new();
+        let context = Contextual::new(Layout::Pretty, self);
+        output.write_fmt(&stylish::Arguments {
+            pieces: &[
+                stylish::Argument::Val(&context),
+            ]
+        }).unwrap();
+        output.into_inner()
+    }
+
+    pub fn to_diag_pretty_colored(&self) -> String {
+        let mut output = stylish::ansi::String::new();
+        let context = Contextual::new(Layout::Pretty, self);
+        output.write_fmt(&stylish::Arguments {
+            pieces: &[
+                stylish::Argument::Val(&context),
+            ]
+        }).unwrap();
+        output.into_inner()
+    }
+
+    pub fn to_diag_pretty_colored_html(&self) -> String {
+        let mut output = stylish::html::String::new();
+        let context = Contextual::new(Layout::Pretty, self);
+        output.write_fmt(&stylish::Arguments {
+            pieces: &[
+                stylish::Argument::Val(&context),
+            ]
+        }).unwrap();
+        output.into_inner()
     }
 }
