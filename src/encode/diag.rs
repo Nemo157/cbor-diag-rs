@@ -1,7 +1,7 @@
 use base64::{self, display::Base64Display};
 use half::f16;
 use hex;
-use ::stylish::{Color, Intensity, Write};
+use ::stylish::{Color, Intensity};
 
 use super::Encoding;
 use {ByteString, DataItem, FloatWidth, IntegerWidth, Simple, Tag, TextString};
@@ -217,7 +217,7 @@ struct Tagged<'a> {
 }
 
 impl stylish::Display for Contextual<&Integer> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         if let IntegerWidth::Unknown | IntegerWidth::Zero = self.bitwidth {
             self.value.fmt(f)?;
         } else {
@@ -245,7 +245,7 @@ impl stylish::Display for Contextual<&Integer> {
 }
 
 impl stylish::Display for Contextual<&Negative> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         let value = -1i128 - i128::from(self.value);
         if let IntegerWidth::Unknown | IntegerWidth::Zero = self.bitwidth {
             value.fmt(f)?;
@@ -274,7 +274,7 @@ impl stylish::Display for Contextual<&Negative> {
 }
 
 impl stylish::Display for Contextual<&Float> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         if self.value.is_nan() {
             f.write_str("NaN")?;
         } else if self.value.is_infinite() {
@@ -304,7 +304,7 @@ impl stylish::Display for Contextual<&Float> {
 }
 
 impl stylish::Display for Contextual<&Simple> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         match ***self {
             Simple::FALSE => f.with(Color::Green).write_str("false")?,
             Simple::TRUE => f.with(Color::Green).write_str("true")?,
@@ -325,7 +325,7 @@ impl stylish::Display for Contextual<&Simple> {
 }
 
 impl stylish::Display for Contextual<&TextString> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         let mut f = f.with(Color::Blue);
 
         f.write_str("\"")?;
@@ -345,7 +345,7 @@ impl stylish::Display for Contextual<&TextString> {
 }
 
 impl stylish::Display for Contextual<&ByteString> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         let mut f = f.with(Color::Yellow);
 
         f.with(Intensity::Faint).write_str(match self.encoding {
@@ -371,7 +371,7 @@ impl stylish::Display for Contextual<&ByteString> {
 }
 
 impl stylish::Display for Contextual<&Tagged<'_>> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         let mut g = f.with(Color::Cyan);
         self.tag.0.fmt(&mut g)?;
         let encoding = match self.bitwidth {
@@ -413,7 +413,7 @@ impl stylish::Display for Contextual<&Tagged<'_>> {
 }
 
 impl<'a, T> stylish::Display for Contextual<&Container<'a, T>> where Contextual<&'a T>: stylish::Display {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         f.with(Intensity::Bold).write_str(self.begin)?;
         if !self.definite {
             f.with(Intensity::Normal).write_str("_")?;
@@ -454,7 +454,7 @@ impl<'a, T> stylish::Display for Contextual<&Container<'a, T>> where Contextual<
 
 // Map key-value pairs
 impl stylish::Display for Contextual<&(DataItem, DataItem)> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         self.wrap(&self.0).fmt(&mut f.with(Intensity::Bold))?;
         f.write_str(":")?;
         if self.pretty() {
@@ -466,7 +466,7 @@ impl stylish::Display for Contextual<&(DataItem, DataItem)> {
 }
 
 impl stylish::Display for Contextual<&DataItem> {
-    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> stylish::Result {
+    fn fmt(&self, f: &mut stylish::Formatter<'_>) -> std::fmt::Result {
         match ***self {
             DataItem::Integer { value, bitwidth } => {
                 self.wrap(&Integer { value, bitwidth }).fmt(f)?;
@@ -541,47 +541,11 @@ impl stylish::Display for Contextual<&DataItem> {
 }
 
 impl DataItem {
-    pub fn to_diag(&self) -> String {
-        let mut output = stylish::plain::String::new();
-        let context = Contextual::new(Layout::Compact, self);
-        output.write_fmt(&stylish::Arguments {
-            pieces: &[
-                stylish::Argument::Val(&context),
-            ]
-        }).unwrap();
-        output.into_inner()
+    pub fn compact_diag(&self) -> impl stylish::Display + '_ {
+        Contextual::new(Layout::Compact, self)
     }
 
-    pub fn to_diag_pretty(&self) -> String {
-        let mut output = stylish::plain::String::new();
-        let context = Contextual::new(Layout::Pretty, self);
-        output.write_fmt(&stylish::Arguments {
-            pieces: &[
-                stylish::Argument::Val(&context),
-            ]
-        }).unwrap();
-        output.into_inner()
-    }
-
-    pub fn to_diag_pretty_colored(&self) -> String {
-        let mut output = stylish::ansi::String::new();
-        let context = Contextual::new(Layout::Pretty, self);
-        output.write_fmt(&stylish::Arguments {
-            pieces: &[
-                stylish::Argument::Val(&context),
-            ]
-        }).unwrap();
-        output.into_inner()
-    }
-
-    pub fn to_diag_pretty_colored_html(&self) -> String {
-        let mut output = stylish::html::String::new();
-        let context = Contextual::new(Layout::Pretty, self);
-        output.write_fmt(&stylish::Arguments {
-            pieces: &[
-                stylish::Argument::Val(&context),
-            ]
-        }).unwrap();
-        output.into_inner()
+    pub fn pretty_diag(&self) -> impl stylish::Display + '_ {
+        Contextual::new(Layout::Pretty, self)
     }
 }

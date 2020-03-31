@@ -65,6 +65,8 @@ trait ReadExt: Read {
 impl<R: Read> ReadExt for R {}
 
 fn output_item(value: cbor_diag::DataItem, to: To, color: Color, mut output: impl Write) -> anyhow::Result<()> {
+    use stylish::Write;
+
     match (to, color) {
         (To::Annotated, _) => {
             output.write_all(value.to_hex().as_bytes())?;
@@ -76,16 +78,40 @@ fn output_item(value: cbor_diag::DataItem, to: To, color: Color, mut output: imp
             output.write_all(&value.to_bytes())?;
         }
         (To::Diag, Color::Auto) | (To::Diag, Color::Always) => {
-            output.write_all(value.to_diag_pretty_colored().as_bytes())?;
-            output.write_all(b"\n")?;
+            let mut output = stylish::ansi::Write::new(output);
+            output.write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Val(&value.pretty_diag()),
+                    stylish::Argument::Lit("\n"),
+                ]
+            })?;
         }
         (To::Diag, Color::Never) => {
-            output.write_all(value.to_diag_pretty().as_bytes())?;
-            output.write_all(b"\n")?;
+            let mut output = stylish::plain::Write::new(output);
+            output.write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Val(&value.pretty_diag()),
+                    stylish::Argument::Lit("\n"),
+                ]
+            })?;
         }
-        (To::Compact, _) => {
-            output.write_all(value.to_diag().as_bytes())?;
-            output.write_all(b"\n")?;
+        (To::Compact, Color::Auto) | (To::Compact, Color::Always) => {
+            let mut output = stylish::ansi::Write::new(output);
+            output.write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Val(&value.compact_diag()),
+                    stylish::Argument::Lit("\n"),
+                ]
+            })?;
+        }
+        (To::Compact, Color::Never) => {
+            let mut output = stylish::plain::Write::new(output);
+            output.write_fmt(&stylish::Arguments {
+                pieces: &[
+                    stylish::Argument::Val(&value.compact_diag()),
+                    stylish::Argument::Lit("\n"),
+                ]
+            })?;
         }
     };
 

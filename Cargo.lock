@@ -91,6 +91,7 @@ dependencies = [
  "paw 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "structopt 0.3.12 (registry+https://github.com/rust-lang/crates.io-index)",
  "strum 0.18.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "stylish 0.1.0 (git+https://github.com/Nemo157/stylish-rs)",
 ]
 
 [[package]]
@@ -555,7 +556,7 @@ dependencies = [
 [[package]]
 name = "stylish"
 version = "0.1.0"
-source = "git+https://github.com/Nemo157/stylish-rs#823560b229822319161a50846586e0984ed06519"
+source = "git+https://github.com/Nemo157/stylish-rs#89f90d8434994c0af95e1eae92a55c072f9553e3"
 dependencies = [
  "askama_escape 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
