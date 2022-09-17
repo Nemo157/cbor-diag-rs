@@ -75,14 +75,14 @@ macro_rules! testcases {
     ) => {
         #[test]
         fn value2diag_compact() {
-            let compact = $value.to_diag();
+            let compact = $value.diagnostic().to_string();
             ::pretty_assertions::assert_eq!($crate::utils::DisplayDebug(compact), $crate::utils::DisplayDebug($compact));
         }
 
         $(
             #[test]
             fn value2diag_pretty() {
-                let pretty = $value.to_diag_pretty();
+                let pretty = $value.diagnostic_pretty().to_string();
                 ::pretty_assertions::assert_eq!($crate::utils::DisplayDebug(pretty), $crate::utils::DisplayDebug(indoc::indoc!($pretty).trim()));
             }
         )?

@@ -98,8 +98,8 @@ fn bench(c: &mut Criterion) {
     let bytes = data.to_bytes();
     c.bench_function("parse::diag", |b| b.iter(|| cbor_diag::parse_diag(black_box(TESTDATA))));
     c.bench_function("parse::binary", |b| b.iter(|| cbor_diag::parse_bytes(black_box(&bytes))));
-    c.bench_function("encode::diag", |b| b.iter(|| black_box(&data).to_diag()));
-    c.bench_function("encode::diag_pretty", |b| b.iter(|| black_box(&data).to_diag_pretty()));
+    c.bench_function("encode::diag", |b| b.iter(|| black_box(&data).diagnostic().to_string()));
+    c.bench_function("encode::diag_pretty", |b| b.iter(|| black_box(&data).diagnostic_pretty().to_string()));
     c.bench_function("encode::hex", |b| b.iter(|| black_box(&data).to_hex()));
     c.bench_function("encode::bytes", |b| b.iter(|| black_box(&data).to_bytes()));
 }

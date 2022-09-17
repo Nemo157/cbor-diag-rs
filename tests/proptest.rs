@@ -203,7 +203,12 @@ mod proptest {
 
         #[test]
         fn to_diag(item in arb_data_item()) {
-            let _ = item.to_diag();
+            let _ = item.diagnostic().to_string();
+        }
+
+        #[test]
+        fn to_diag_pretty(item in arb_data_item()) {
+            let _ = item.diagnostic_pretty().to_string();
         }
     }
 }

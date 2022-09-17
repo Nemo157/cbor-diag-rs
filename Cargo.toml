@@ -30,6 +30,7 @@ separator = { version = "0.4.1", default-features = false }
 uuid = { version = "1.1.2", default-features = false }
 bs58 = { version = "0.4.0", default-features = false, features = ["alloc"] }
 data-encoding = { version = "2.3.2", default-features = false, features = ["alloc"] }
+fehler = "1.0.0"
 
 [dev-dependencies]
 indoc = { version = "1.0.7", default-features = false }

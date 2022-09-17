@@ -1,9 +1,11 @@
 use half::f16;
 
-use std::fmt::Write;
+use std::fmt::{Display, Error, Formatter};
 
 use super::Encoding;
 use crate::{ByteString, DataItem, FloatWidth, IntegerWidth, Simple, Tag, TextString};
+
+const I: &str = "";
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum Layout {
@@ -11,8 +13,9 @@ pub(crate) enum Layout {
     Compact,
 }
 
-pub(crate) struct Context<'a> {
-    output: &'a mut String,
+#[derive(Copy, Clone)]
+pub(crate) struct Context<T> {
+    value: T,
     layout: Layout,
     encoding: Encoding,
     indent: usize,
@@ -21,11 +24,11 @@ pub(crate) struct Context<'a> {
 trait LengthEstimate {
     /// Can shortcircuit and return `max` if it is more than that
     fn estimate(&self, max: usize) -> usize;
-}
 
-fn is_trivial(value: &impl LengthEstimate) -> bool {
-    const MAX: usize = 60;
-    value.estimate(MAX) < MAX
+    fn is_trivial(&self) -> bool {
+        const MAX: usize = 60;
+        self.estimate(MAX) < MAX
+    }
 }
 
 impl LengthEstimate for DataItem {
@@ -37,46 +40,10 @@ impl LengthEstimate for DataItem {
             DataItem::Simple(value) => value.estimate(max),
             DataItem::ByteString(value) => value.estimate(max),
             DataItem::TextString(value) => value.estimate(max),
-            DataItem::Array { data, .. } => {
-                let mut len = 4;
-                for item in data {
-                    len += item.estimate(max.saturating_sub(len)) + 2;
-                    if len >= max {
-                        return len;
-                    }
-                }
-                len
-            }
-            DataItem::Map { data, .. } => {
-                let mut len = 4;
-                for entry in data {
-                    len += entry.estimate(max.saturating_sub(len)) + 2;
-                    if len >= max {
-                        return len;
-                    }
-                }
-                len
-            }
-            DataItem::IndefiniteByteString(strings) => {
-                let mut len = 4;
-                for string in strings {
-                    len += string.estimate(max.saturating_sub(len)) + 2;
-                    if len >= max {
-                        return len;
-                    }
-                }
-                len
-            }
-            DataItem::IndefiniteTextString(strings) => {
-                let mut len = 4;
-                for string in strings {
-                    len += string.estimate(max.saturating_sub(len)) + 2;
-                    if len >= max {
-                        return len;
-                    }
-                }
-                len
-            }
+            DataItem::Array { data, .. } => data.estimate(max.saturating_sub(4)) + 4,
+            DataItem::Map { data, .. } => data.estimate(max.saturating_sub(4)) + 4,
+            DataItem::IndefiniteByteString(strings) => strings.estimate(max.saturating_sub(4)) + 4,
+            DataItem::IndefiniteTextString(strings) => strings.estimate(max.saturating_sub(4)) + 4,
             DataItem::Tag { tag, value, .. } => (tag, value).estimate(max),
         }
     }
@@ -96,9 +63,22 @@ impl<T: LengthEstimate + ?Sized> LengthEstimate for Box<T> {
 
 impl<T: LengthEstimate, U: LengthEstimate> LengthEstimate for (T, U) {
     fn estimate(&self, max: usize) -> usize {
-        let mut len = self.0.estimate(max);
+        let mut len = self.0.estimate(max.saturating_sub(2)) + 2;
         if len < max {
-            len += self.1.estimate(max - len);
+            len += self.1.estimate(max.saturating_sub(len));
+        }
+        len
+    }
+}
+
+impl<T: LengthEstimate> LengthEstimate for [T] {
+    fn estimate(&self, max: usize) -> usize {
+        let mut len = 0;
+        for item in self {
+            len += item.estimate(max.saturating_sub(len)) + 2;
+            if len >= max {
+                return len;
+            }
         }
         len
     }
@@ -128,42 +108,76 @@ impl LengthEstimate for Simple {
     }
 }
 
-impl<'a> Context<'a> {
-    pub(crate) fn new(output: &'a mut String, layout: Layout) -> Self {
+impl<T> Context<T> {
+    pub(crate) fn new(value: T, layout: Layout) -> Self {
         Self {
-            output,
+            value,
             layout,
             encoding: Encoding::Base16,
             indent: 0,
         }
     }
 
-    pub(crate) fn with_encoding(&mut self, encoding: Encoding) -> Context<'_> {
+    fn with_encoding(self, encoding: Encoding) -> Self {
+        Self { encoding, ..self }
+    }
+
+    fn is_pretty(&self) -> bool {
+        self.layout == Layout::Pretty
+    }
+
+    fn wrap<U>(&self, value: U) -> Context<U> {
         Context {
-            output: self.output,
+            value,
             layout: self.layout,
-            encoding,
+            encoding: self.encoding,
             indent: self.indent,
         }
     }
 
-    fn pretty(&self) -> bool {
-        self.layout == Layout::Pretty
+    fn list<'a, U: LengthEstimate>(
+        &self,
+        begin: &'static str,
+        items: &'a [U],
+        end: &'static str,
+        is_definite: bool,
+    ) -> Context<List<'a, U>> {
+        let is_trivial = items.is_trivial();
+        self.wrap(List {
+            begin,
+            items,
+            end,
+            is_definite,
+            is_trivial,
+        })
     }
 
-    fn indent(&mut self) {
-        for _ in 0..self.indent {
-            self.output.push(' ');
+    fn indent(self) -> Self {
+        Self {
+            indent: self.indent + 4,
+            ..self
         }
     }
+}
 
-    fn line(&mut self) {
-        self.output.push('\n');
+impl<T> core::ops::Deref for Context<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.value
     }
+}
 
-    fn integer_to_diag(&mut self, value: u64, bitwidth: IntegerWidth) {
+impl Display for Context<(bool, u64, IntegerWidth)> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        let (positive, value, bitwidth) = **self;
+        let value = if positive {
+            i128::from(value)
+        } else {
+            -1 - i128::from(value)
+        };
         if bitwidth == IntegerWidth::Unknown || bitwidth == IntegerWidth::Zero {
-            self.output.push_str(&value.to_string());
+            write!(f, "{}", value)?;
         } else {
             let encoding = match bitwidth {
                 IntegerWidth::Eight => 0,
@@ -172,176 +186,185 @@ impl<'a> Context<'a> {
                 IntegerWidth::SixtyFour => 3,
                 _ => unreachable!(),
             };
-            write!(self.output, "{}_{}", value, encoding).unwrap();
+            write!(f, "{}_{}", value, encoding)?;
         }
     }
+}
 
-    fn negative_to_diag(&mut self, value: u64, bitwidth: IntegerWidth) {
-        let value = -1i128 - i128::from(value);
-        if bitwidth == IntegerWidth::Unknown || bitwidth == IntegerWidth::Zero {
-            self.output.push_str(&value.to_string());
+impl Display for Context<(f64, FloatWidth)> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        let (value, bitwidth) = **self;
+        if value.is_nan() {
+            f.write_str("NaN")?;
+        } else if value.is_infinite() {
+            if value.is_sign_negative() {
+                f.write_str("-")?;
+            }
+            f.write_str("Infinity")?;
         } else {
-            let encoding = match bitwidth {
-                IntegerWidth::Eight => 0,
-                IntegerWidth::Sixteen => 1,
-                IntegerWidth::ThirtyTwo => 2,
-                IntegerWidth::SixtyFour => 3,
-                _ => unreachable!(),
+            let value = match bitwidth {
+                FloatWidth::Unknown | FloatWidth::SixtyFour => value.to_string(),
+                FloatWidth::Sixteen => f16::from_f64(value).to_string(),
+                FloatWidth::ThirtyTwo => (value as f32).to_string(),
             };
-            write!(self.output, "{}_{}", value, encoding).unwrap();
+            f.write_str(&value)?;
+            if !value.contains('.') && !value.contains('e') {
+                f.write_str(".0")?;
+            }
+        }
+        f.write_str(match bitwidth {
+            FloatWidth::Unknown => "",
+            FloatWidth::Sixteen => "_1",
+            FloatWidth::ThirtyTwo => "_2",
+            FloatWidth::SixtyFour => "_3",
+        })?;
+    }
+}
+
+impl Display for Context<Simple> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        match **self {
+            Simple::FALSE => f.write_str("false")?,
+            Simple::TRUE => f.write_str("true")?,
+            Simple::NULL => f.write_str("null")?,
+            Simple::UNDEFINED => f.write_str("undefined")?,
+            Simple(value) => write!(f, "simple({})", value)?,
         }
     }
+}
 
-    fn definite_bytestring_to_diag(&mut self, bytestring: &ByteString) {
+impl Display for Context<&ByteString> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
         match self.encoding {
             Encoding::Base64Url => {
-                self.output.push_str("b64'");
-                data_encoding::BASE64URL_NOPAD.encode_append(&bytestring.data, self.output);
-                self.output.push('\'');
+                write!(
+                    f,
+                    "b64'{}'",
+                    data_encoding::BASE64URL_NOPAD.encode(&self.data)
+                )?;
             }
             Encoding::Base64 => {
-                self.output.push_str("b64'");
-                data_encoding::BASE64.encode_append(&bytestring.data, self.output);
-                self.output.push('\'');
+                write!(f, "b64'{}'", data_encoding::BASE64.encode(&self.data))?;
             }
             Encoding::Base16 => {
-                self.output.push_str("h'");
-                data_encoding::HEXLOWER.encode_append(&bytestring.data, self.output);
-                self.output.push('\'');
+                write!(f, "h'{}'", data_encoding::HEXLOWER.encode(&self.data))?;
             }
         }
     }
+}
 
-    fn definite_textstring_to_diag(&mut self, textstring: &TextString) {
-        self.output.push('"');
-        for c in textstring.data.chars() {
+impl Display for Context<&TextString> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        f.write_str("\"")?;
+        for c in self.data.chars() {
             if c == '\"' || c == '\\' {
-                for c in c.escape_default() {
-                    self.output.push(c);
-                }
+                write!(f, "{}", c.escape_default())?;
             } else {
-                self.output.push(c);
+                write!(f, "{c}")?;
             }
         }
-        self.output.push('"');
+        f.write_str("\"")?;
     }
+}
 
-    fn container_to_diag<T>(
-        &mut self,
-        begin: impl Into<String>,
-        items: impl IntoIterator<Item = T>,
-        end: impl Into<String>,
-        definite: bool,
-        trivial: bool,
-        item_to_diag: fn(&mut Self, T),
-    ) {
-        self.output.push_str(&begin.into());
-        if !definite {
-            self.output.push('_');
-            if trivial && self.pretty() {
-                self.output.push(' ');
+struct List<'a, T> {
+    begin: &'static str,
+    items: &'a [T],
+    end: &'static str,
+    is_definite: bool,
+    is_trivial: bool,
+}
+
+impl<T> Display for Context<List<'_, T>>
+where
+    for<'a> Context<&'a T>: Display,
+{
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        let Context { mut indent, .. } = *self;
+        f.write_str(self.begin)?;
+        if !self.is_definite {
+            f.write_str("_")?;
+            if self.is_pretty() && self.is_trivial {
+                f.write_str(" ")?;
             }
         }
-        if !trivial {
-            self.indent += 4;
-        }
-        let mut items = items.into_iter();
+        indent += 4;
+        let mut items = self.items.iter();
         if let Some(item) = items.next() {
-            if self.pretty() && !trivial {
-                self.line();
-                self.indent();
+            if self.is_pretty() && !self.is_trivial {
+                write!(f, "\n{I:indent$}")?;
             }
-            item_to_diag(self, item);
+            self.wrap(item).indent().fmt(f)?;
         }
         for item in items {
-            self.output.push(',');
-            if self.pretty() {
-                if trivial {
-                    self.output.push(' ');
+            f.write_str(",")?;
+            if self.is_pretty() {
+                if self.is_trivial {
+                    f.write_str(" ")?;
                 } else {
-                    self.line();
-                    self.indent();
+                    write!(f, "\n{I:indent$}")?;
                 }
             }
-            item_to_diag(self, item);
+            self.wrap(item).fmt(f)?;
         }
-        if !trivial {
-            self.indent -= 4;
-            if self.pretty() {
-                self.output.push(',');
-                self.line();
-                self.indent();
-            }
+        indent -= 4;
+        if self.is_pretty() && !self.is_trivial {
+            write!(f, ",\n{I:indent$}")?;
         }
-        self.output.push_str(&end.into());
+        f.write_str(self.end)?;
     }
+}
 
-    fn indefinite_string_to_diag<T>(
-        &mut self,
-        strings: &[T],
-        trivial: bool,
-        definite_string_to_diag: fn(&mut Self, &T),
-    ) {
-        self.container_to_diag('(', strings, ')', false, trivial, definite_string_to_diag);
-    }
-
-    fn array_to_diag(&mut self, array: &[DataItem], definite: bool, trivial: bool) {
-        self.container_to_diag('[', array, ']', definite, trivial, Self::item_to_diag);
-    }
-
-    fn map_to_diag(&mut self, values: &[(DataItem, DataItem)], definite: bool, trivial: bool) {
-        self.container_to_diag('{', values, '}', definite, trivial, |this, (key, value)| {
-            this.item_to_diag(key);
-            this.output.push(':');
-            if this.pretty() {
-                this.output.push(' ');
-            }
-            this.item_to_diag(value);
-        });
-    }
-
-    pub fn tagged_to_diag(&mut self, tag: Tag, bitwidth: IntegerWidth, value: &DataItem) {
-        if bitwidth == IntegerWidth::Unknown || bitwidth == IntegerWidth::Zero {
-            self.output.push_str(&tag.0.to_string());
+impl Display for Context<&(DataItem, DataItem)> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        let (key, value) = (self.wrap(&self.0), self.wrap(&self.1));
+        if self.is_pretty() {
+            write!(f, "{key}: {value}")?;
         } else {
-            let encoding = match bitwidth {
-                IntegerWidth::Eight => 0,
-                IntegerWidth::Sixteen => 1,
-                IntegerWidth::ThirtyTwo => 2,
-                IntegerWidth::SixtyFour => 3,
-                _ => unreachable!(),
-            };
-            write!(self.output, "{}_{}", tag.0, encoding).unwrap();
+            write!(f, "{key}:{value}")?;
         }
-        self.output.push('(');
+    }
+}
+
+impl Display for Context<(Tag, IntegerWidth, &DataItem)> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        let (tag, width, value) = **self;
+
+        write!(f, "{}(", self.wrap((true, tag.0, width)))?;
 
         match tag {
             Tag::ENCODED_BASE64URL => {
-                self.with_encoding(Encoding::Base64Url).item_to_diag(value);
+                self.wrap(value).with_encoding(Encoding::Base64Url).fmt(f)?;
             }
             Tag::ENCODED_BASE64 => {
-                self.with_encoding(Encoding::Base64).item_to_diag(value);
+                self.wrap(value).with_encoding(Encoding::Base64).fmt(f)?;
             }
             Tag::ENCODED_BASE16 => {
-                self.with_encoding(Encoding::Base16).item_to_diag(value);
+                self.wrap(value).with_encoding(Encoding::Base16).fmt(f)?;
             }
             Tag::ENCODED_CBOR => {
                 if let DataItem::ByteString(ByteString { data, .. }) = value {
                     if data.is_empty() {
-                        self.output.push_str("<<>>");
+                        self.list::<DataItem>("<<", &[], ">>", true).fmt(f)?;
                     } else if let Ok(item) = crate::parse_bytes(data) {
-                        self.output.push_str("<<");
-                        self.item_to_diag(&item);
-                        self.output.push_str(">>");
+                        let items = &[item];
+                        self.list("<<", items, ">>", true).fmt(f)?;
                     } else {
-                        self.item_to_diag(value);
+                        self.wrap(value).fmt(f)?;
                     }
                 } else {
-                    self.item_to_diag(value);
+                    self.wrap(value).fmt(f)?;
                 }
             }
             Tag::ENCODED_CBOR_SEQ => {
-                if let DataItem::ByteString(ByteString { data, bitwidth }) = value {
+                if let DataItem::ByteString(ByteString { ref data, bitwidth }) = *value {
                     let mut data = data.as_slice();
                     let mut items = Vec::new();
                     while let Ok(Some((item, len))) = crate::parse_bytes_partial(data) {
@@ -349,142 +372,81 @@ impl<'a> Context<'a> {
                         data = rest;
                         items.push(item);
                     }
-                    self.container_to_diag(
-                        "<<",
-                        &items,
-                        ">>",
-                        true,
-                        is_trivial(&DataItem::Array {
-                            data: items.clone(),
-                            bitwidth: None,
-                        }),
-                        Self::item_to_diag,
-                    );
+                    self.list("<<", &items, ">>", true).fmt(f)?;
                     if !data.is_empty() {
-                        if self.pretty() {
-                            self.output.push(' ');
+                        if self.is_pretty() {
+                            f.write_str(" ")?;
                         }
-                        self.item_to_diag(&DataItem::ByteString(ByteString {
+                        self.wrap(&DataItem::ByteString(ByteString {
                             data: data.into(),
-                            bitwidth: *bitwidth,
-                        }));
+                            bitwidth,
+                        }))
+                        .fmt(f)?;
                     }
                 } else {
-                    self.item_to_diag(value);
+                    self.wrap(value).fmt(f)?;
                 }
             }
             _ => {
-                self.item_to_diag(value);
+                self.wrap(value).fmt(f)?;
             }
         }
 
-        self.output.push(')');
+        f.write_str(")")?;
     }
+}
 
-    fn float_to_diag(&mut self, value: f64, bitwidth: FloatWidth) {
-        if value.is_nan() {
-            self.output.push_str("NaN");
-        } else if value.is_infinite() {
-            if value.is_sign_negative() {
-                self.output.push('-');
-            }
-            self.output.push_str("Infinity");
-        } else {
-            let value = match bitwidth {
-                FloatWidth::Unknown | FloatWidth::SixtyFour => value.to_string(),
-                FloatWidth::Sixteen => f16::from_f64(value).to_string(),
-                FloatWidth::ThirtyTwo => (value as f32).to_string(),
-            };
-            self.output.push_str(&value);
-            if !value.contains('.') && !value.contains('e') {
-                self.output.push_str(".0");
-            }
-        }
-        self.output.push_str(match bitwidth {
-            FloatWidth::Unknown => "",
-            FloatWidth::Sixteen => "_1",
-            FloatWidth::ThirtyTwo => "_2",
-            FloatWidth::SixtyFour => "_3",
-        });
-    }
-
-    fn simple_to_diag(&mut self, simple: Simple) {
-        match simple {
-            Simple::FALSE => self.output.push_str("false"),
-            Simple::TRUE => self.output.push_str("true"),
-            Simple::NULL => self.output.push_str("null"),
-            Simple::UNDEFINED => self.output.push_str("undefined"),
-            Simple(value) => write!(self.output, "simple({})", value).unwrap(),
-        }
-    }
-
-    fn item_to_diag(&mut self, value: &DataItem) {
-        match *value {
+impl Display for Context<&DataItem> {
+    #[fehler::throws]
+    fn fmt(&self, f: &mut Formatter<'_>) {
+        match ***self {
             DataItem::Integer { value, bitwidth } => {
-                self.integer_to_diag(value, bitwidth);
+                self.wrap((true, value, bitwidth)).fmt(f)?;
             }
             DataItem::Negative { value, bitwidth } => {
-                self.negative_to_diag(value, bitwidth);
+                self.wrap((false, value, bitwidth)).fmt(f)?;
             }
             DataItem::ByteString(ref bytestring) => {
-                self.definite_bytestring_to_diag(bytestring);
+                self.wrap(bytestring).fmt(f)?;
             }
-            DataItem::IndefiniteByteString(ref bytestrings) => {
-                self.indefinite_string_to_diag(
-                    bytestrings,
-                    is_trivial(value),
-                    Self::definite_bytestring_to_diag,
-                );
+            DataItem::IndefiniteByteString(ref strings) => {
+                self.list("(", strings, ")", false).fmt(f)?;
             }
-            DataItem::TextString(ref textstring) => {
-                self.definite_textstring_to_diag(textstring);
+            DataItem::TextString(ref string) => {
+                self.wrap(string).fmt(f)?;
             }
-            DataItem::IndefiniteTextString(ref textstrings) => {
-                self.indefinite_string_to_diag(
-                    textstrings,
-                    is_trivial(value),
-                    Self::definite_textstring_to_diag,
-                );
+            DataItem::IndefiniteTextString(ref strings) => {
+                self.list("(", strings, ")", false).fmt(f)?;
             }
-            DataItem::Array {
-                ref data,
-                ref bitwidth,
-            } => {
-                self.array_to_diag(data, bitwidth.is_some(), is_trivial(value));
+            DataItem::Array { ref data, bitwidth } => {
+                self.list("[", data, "]", bitwidth.is_some()).fmt(f)?;
             }
-            DataItem::Map {
-                ref data,
-                ref bitwidth,
-            } => {
-                self.map_to_diag(data, bitwidth.is_some(), is_trivial(value));
+            DataItem::Map { ref data, bitwidth } => {
+                self.list("{", data, "}", bitwidth.is_some()).fmt(f)?;
             }
             DataItem::Tag {
                 tag,
                 bitwidth,
                 ref value,
             } => {
-                self.tagged_to_diag(tag, bitwidth, value);
+                self.wrap((tag, bitwidth, &**value)).fmt(f)?;
             }
             DataItem::Float { value, bitwidth } => {
-                self.float_to_diag(value, bitwidth);
+                self.wrap((value, bitwidth)).fmt(f)?;
             }
             DataItem::Simple(simple) => {
-                self.simple_to_diag(simple);
+                self.wrap(simple).fmt(f)?;
             }
         }
     }
 }
 
 impl DataItem {
-    pub fn to_diag(&self) -> String {
-        let mut s = String::with_capacity(128);
-        Context::new(&mut s, Layout::Compact).item_to_diag(self);
-        s
+    pub fn diagnostic(&self) -> impl Display + '_ {
+        Context::new(self, Layout::Compact)
     }
 
-    pub fn to_diag_pretty(&self) -> String {
-        let mut s = String::with_capacity(128);
-        Context::new(&mut s, Layout::Pretty).item_to_diag(self);
-        s
+    pub fn diagnostic_pretty(&self) -> impl Display + '_ {
+        Context::new(self, Layout::Pretty)
     }
 }
